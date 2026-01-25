@@ -23,11 +23,11 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v21
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU (user-mode emulation)
+        uses: aha-app/actions-setup-qemu@v2
 
-      - name: Install xz (required for Magic Nix Cache)
-        run: sudo apt-get update && sudo apt-get install -y xz-utils
+      - name: Install xz and binfmt support (required for QEMU)
+        run: sudo apt-get update && sudo apt-get install -y xz-utils binfmt-support
 
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v13
