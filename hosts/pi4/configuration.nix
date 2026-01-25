@@ -66,14 +66,15 @@
     # See README for setup instructions
     url = "https://github.com/denysvitali";
 
-    # Persistent storage for runner data
-    # The token file (.runner_token) should be placed manually after first boot
-    # Location: /var/lib/github-runner/.runner_token
+    # Token file location (will be created on first boot with placeholder)
+    # User should replace contents with actual GitHub PAT after first boot
+    tokenFile = "/var/lib/github-runner/.runner_token";
   };
 
   # Ensure persistent directory exists for GitHub runner
   systemd.tmpfiles.rules = [
     "d /var/lib/github-runner 0755 github-runner github-runner -"
+    "f /var/lib/github-runner/.runner_token 0600 github-runner github-runner -"
   ];
 
   # ============== Networking ==============
