@@ -1,0 +1,48 @@
+name: Build and Release SD Image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: self-hosted
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v21
+
+      - name: Magic Nix Cache
+        uses: DeterminateSystems/magic-nix-cache-action@v13
+
+      - name: Build SD Image
+        run: nix build .#packages.x86_64-linux.pi4-sd-image -L
+
+      - name: Rename image for release
+        run: |
+          mkdir -p output
+          cp -L result/sd-image/*.img* output/
+          # Optional: specifically name it if needed, but globbing works for upload
+
+      - name: Upload Image Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: pi4-sd-image
+          path: output/*
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: output/*
+          generate_release_notes: true
