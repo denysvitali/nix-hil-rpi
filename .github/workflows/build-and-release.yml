@@ -13,7 +13,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
     steps:
@@ -35,8 +35,8 @@ jobs:
           echo "extra-substituters = https://nix-community.cachix.org https://cache.nixos.org" >> ~/.config/nix/nix.conf
           echo "extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" >> ~/.config/nix/nix.conf
 
-      - name: Build SD Image (cross-compile from x86_64 to aarch64)
-        run: nix build .#packages.x86_64-linux.pi4-sd-image -L
+      - name: Build SD Image (native ARM64 build)
+        run: nix build .#packages.aarch64-linux.pi4-sd-image -L
 
       - name: Rename image for release
         run: |
