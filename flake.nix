@@ -5,6 +5,17 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 
+  nixConfig = {
+    extra-substituters = [
+      "https://nix-community.cachix.org"
+      "https://cache.nixos.org"
+    ];
+    extra-trusted-public-keys = [
+      "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+      "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
+    ];
+  };
+
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
@@ -14,9 +25,18 @@
       });
     in
     {
-      nixosConfigurations.pi4 = nixpkgs.lib.nixosSystem {
-        # The host system where the image is built. 
-        # We use x86_64-linux as the primary host, but it can be overridden.
+      # Native build on aarch64-linux
+      nixosConfigurations.pi4-aarch64 = nixpkgs.lib.nixosSystem {
+        system = "aarch64-linux";
+        modules = [
+          "${nixpkgs}/nixos/modules/installer/sd-card/sd-image-aarch64.nix"
+          ./hosts/pi4/configuration.nix
+          ./hosts/pi4/hardware.nix
+        ];
+      };
+
+      # Cross-compile from x86_64-linux to aarch64-linux
+      nixosConfigurations.pi4-cross = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         modules = [
           {
@@ -31,10 +51,11 @@
       };
 
       packages = forAllSystems ({ system, pkgs }: {
-        # On x86_64, we can build the cross-compiled image.
-        # On aarch64, we might want to build it natively.
-        # For simplicity, we just provide the same config.
-        pi4-sd-image = self.nixosConfigurations.pi4.config.system.build.sdImage;
+        # Use native build on aarch64, cross-compile on x86_64
+        pi4-sd-image =
+          if system == "aarch64-linux"
+          then self.nixosConfigurations.pi4-aarch64.config.system.build.sdImage
+          else self.nixosConfigurations.pi4-cross.config.system.build.sdImage;
       });
 
       defaultPackage = forAllSystems ({ system, pkgs }: self.packages.${system}.pi4-sd-image);
