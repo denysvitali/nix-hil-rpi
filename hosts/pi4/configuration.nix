@@ -2,10 +2,10 @@
 
 {
   # ============== File Systems ==============
-  fileSystems."/" = {
-    device = "/dev/disk/by-label/NIXOS_SD";
-    fsType = "ext4";
-  };
+  # fileSystems."/" = {
+  #   device = "/dev/disk/by-label/NIXOS_SD";
+  #   fsType = "ext4";
+  # };
 
   # ============== SSH Configuration ==============
   services.openssh = {
@@ -90,6 +90,9 @@
 
   # Enable automatic garbage collection
   nix.gc.automatic = true;
+
+  # System state version
+  system.stateVersion = "24.11";
 
   # Generate a machine-id for DHCP/DNS
   systemd.services.systemd-machine-id-commit.wantedBy = [ "multi-user.target" ];

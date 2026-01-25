@@ -9,6 +9,9 @@
     "gpu_mem=128"
   ];
 
+  # Use the specialized Raspberry Pi 4 kernel
+  boot.kernelPackages = pkgs.linuxPackages_rpi4;
+
   # Required for Raspberry Pi 4
   hardware = {
     enableRedistributableFirmware = true;
@@ -17,8 +20,10 @@
   # Bootloader configuration for Raspberry Pi 4
   boot.loader = {
     grub.enable = false;
-    generic-extlinux-compatible = {
-      enable = true;
-    };
+    generic-extlinux-compatible.enable = true;
   };
+
+  # Enable SD image creation
+  # (No sdImage.enable option; importing the module is enough)
+  # sdImage.compressImage = false; # Set to true if you want .img.xz
 }
