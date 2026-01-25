@@ -23,11 +23,12 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v21
 
-      - name: Set up QEMU (user-mode emulation)
-        uses: aha-app/actions-setup-qemu@v2
-
-      - name: Install xz and binfmt support (required for QEMU)
-        run: sudo apt-get update && sudo apt-get install -y xz-utils binfmt-support
+      - name: Set up QEMU user-mode emulation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support xz-utils
+          # Verify binfmt is registered
+          ls -la /proc/sys/fs/binfmt_misc/ | grep qemu
 
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v13
