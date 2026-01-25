@@ -13,8 +13,7 @@ on:
 
 jobs:
   build:
-    # Use native ARM64 runner to avoid cross-compilation issues
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
@@ -24,7 +23,7 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v21
 
-      - name: Install xz (required for Magic Nix Cache)
+      - name: Install dependencies
         run: sudo apt-get update && sudo apt-get install -y xz-utils
 
       - name: Magic Nix Cache
@@ -32,19 +31,17 @@ jobs:
 
       - name: Configure Nix substituters
         run: |
-          # Configure nix-community cache for cross-compilation
           mkdir -p ~/.config/nix
           echo "extra-substituters = https://nix-community.cachix.org https://cache.nixos.org" >> ~/.config/nix/nix.conf
           echo "extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" >> ~/.config/nix/nix.conf
 
-      - name: Build SD Image (native ARM64 build)
-        run: nix build .#packages.aarch64-linux.pi4-sd-image -L
+      - name: Build SD Image (cross-compile from x86_64 to aarch64)
+        run: nix build .#packages.x86_64-linux.pi4-sd-image -L
 
       - name: Rename image for release
         run: |
           mkdir -p output
           cp -L result/sd-image/*.img* output/
-          # Optional: specifically name it if needed, but globbing works for upload
 
       - name: Upload Image Artifact
         uses: actions/upload-artifact@v6
