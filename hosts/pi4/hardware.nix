@@ -23,6 +23,13 @@
     generic-extlinux-compatible.enable = true;
   };
 
+  # Workaround for dw-hdmi module not being included in linux-rpi kernel
+  # See: https://github.com/NixOS/nixos-hardware/issues/1745
+  boot.initrd.availableKernelModules = lib.mkForce [
+    # Exclude dw-hdmi as it's not built with linux-rpi
+    # The system will still work without it in initrd
+  ];
+
   # Enable SD image creation
   # (No sdImage.enable option; importing the module is enough)
   # sdImage.compressImage = false; # Set to true if you want .img.xz
