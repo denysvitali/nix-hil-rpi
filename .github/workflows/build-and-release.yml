@@ -13,7 +13,8 @@ on:
 
 jobs:
   build:
-    runs-on: self-hosted
+    # Use native ARM64 runner to avoid cross-compilation issues
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
     steps:
@@ -23,14 +24,8 @@ jobs:
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@v21
 
-      - name: Set up QEMU user-mode emulation
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-user-static binfmt-support xz-utils
-          # Start binfmt support service to register QEMU handlers
-          sudo service binfmt-support start || sudo systemctl restart binfmt-support
-          # Verify binfmt is registered
-          ls -la /proc/sys/fs/binfmt_misc/ | grep qemu || true
+      - name: Install xz (required for Magic Nix Cache)
+        run: sudo apt-get update && sudo apt-get install -y xz-utils
 
       - name: Magic Nix Cache
         uses: DeterminateSystems/magic-nix-cache-action@v13
@@ -42,8 +37,8 @@ jobs:
           echo "extra-substituters = https://nix-community.cachix.org https://cache.nixos.org" >> ~/.config/nix/nix.conf
           echo "extra-trusted-public-keys = nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" >> ~/.config/nix/nix.conf
 
-      - name: Build SD Image
-        run: nix build .#packages.x86_64-linux.pi4-sd-image -L
+      - name: Build SD Image (native ARM64 build)
+        run: nix build .#packages.aarch64-linux.pi4-sd-image -L
 
       - name: Rename image for release
         run: |
