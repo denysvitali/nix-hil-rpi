@@ -26,12 +26,11 @@
   # Workaround for dw-hdmi module not being included in linux-rpi kernel
   # See: https://github.com/NixOS/nixos-hardware/issues/1745
   boot.initrd.availableKernelModules = lib.mkForce [
+    # Essential modules for boot - SD card and filesystem support
+    "mmc_block" "sdhci" "sdhci-pci" "sdhci-iproc" "ext4" "vfat"
     # Exclude dw-hdmi as it's not built with linux-rpi
     # The system will still work without it in initrd
   ];
-
-  # Also exclude dw-hdmi from being probed during module shrinking
-  boot.kernelModules = lib.mkForce [ ];
 
   # Enable SD image creation
   # (No sdImage.enable option; importing the module is enough)
