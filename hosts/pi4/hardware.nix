@@ -30,6 +30,9 @@
     # The system will still work without it in initrd
   ];
 
+  # Also exclude dw-hdmi from being probed during module shrinking
+  boot.kernelModules = lib.mkForce [ ];
+
   # Enable SD image creation
   # (No sdImage.enable option; importing the module is enough)
   # sdImage.compressImage = false; # Set to true if you want .img.xz
