@@ -50,25 +50,68 @@ users.users.pi.openssh.authorizedKeys.keys = [
 ];
 ```
 
-### 2. GitHub Runner Token (Manual Setup)
+### 2. GitHub Runner Setup (After First Boot)
 
-After first boot, SSH to the Pi and add your runner token:
+The GitHub Actions runner is **disabled by default** in the SD image. To enable it after first boot:
+
+#### Step 1: Get your GitHub token
+
+1. Go to your repo/org settings on GitHub
+2. Settings → Actions → Runners → New runner
+3. Copy the token (or better: create a fine-grained Personal Access Token with "Read and Write access to self-hosted runners")
+
+#### Step 2: SSH to the Pi
 
 ```bash
-# SSH to the Pi (get IP from your router or mDNS)
 ssh pi@pi4-smoke-test.local
-
-# Create the token file
-sudo mkdir -p /var/lib/github-runner
-echo "YOUR_GITHUB_PAT" | sudo tee /var/lib/github-runner/.runner_token > /dev/null
-sudo chown github-runner:github-runner /var/lib/github-runner/.runner_token
-sudo chmod 600 /var/lib/github-runner/.runner_token
-
-# Restart the runner service
-sudo systemctl restart github-runner-pi4-smoke-test.service
+# or: ssh pi@<PI_IP>
 ```
 
-**Important**: The runner won't start until the token file exists!
+#### Step 3: Configure and enable the runner
+
+```bash
+# Edit the NixOS configuration
+sudo nano /etc/nixos/configuration.nix
+```
+
+Find the `github-runners` section and modify it:
+
+```nix
+services.github-runners.pi4-smoke-test = {
+  enable = true;  # ← Change from false to true
+  name = "pi4-smoke-test";
+  # Set your GitHub repository or organization URL
+  url = "https://github.com/your-org/your-repo";  # ← Add this
+  # Keep tokenFile as is
+  tokenFile = "/var/lib/github-runner/.runner_token";
+  # ... keep other settings (labels, etc)
+};
+```
+
+#### Step 4: Create the token file
+
+```bash
+# Create directory
+sudo mkdir -p /var/lib/github-runner
+
+# Save your token (no newline!)
+echo -n 'YOUR_PAT_OR_RUNNER_TOKEN' | sudo tee /var/lib/github-runner/.runner_token
+
+# Set permissions
+sudo chmod 0600 /var/lib/github-runner/.runner_token
+```
+
+#### Step 5: Rebuild
+
+```bash
+sudo nixos-rebuild switch
+```
+
+The runner will start automatically after rebuild. Check status:
+
+```bash
+sudo systemctl status github-runner-pi4-smoke-test.service
+```
 
 ## Building
 

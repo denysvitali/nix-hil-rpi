@@ -44,9 +44,50 @@ nixos-rebuild switch --rollback
 ## Key Configuration Points
 
 - **SSH keys**: Add in `users.users.pi.openssh.authorizedKeys.keys`
-- **GitHub runner token**: Set via `services.github-runners.pi4-smoke-test.tokenFile`
-  - Token file: `/var/lib/github-runner/.runner_token` (create manually after first boot)
 - **CI tools**: `probe-rs-tools`, `espflash`, `cargo`, `rustc`
+
+## Enabling GitHub Runner After First Boot
+
+The GitHub Actions runner is disabled by default in the SD image. To enable it after first boot:
+
+1. **SSH into the Pi**:
+   ```bash
+   ssh pi@<PI_IP>
+   ```
+
+2. **Edit the configuration**:
+   ```bash
+   sudo nano /etc/nixos/configuration.nix
+   ```
+
+3. **Modify the github-runners section**:
+   ```nix
+   services.github-runners.pi4-smoke-test = {
+     enable = true;  # Change from false to true
+     name = "pi4-smoke-test";
+     # Set your GitHub repository or organization URL
+     url = "https://github.com/your-org/your-repo";
+     # Set token file path (create this file next)
+     tokenFile = "/var/lib/github-runner/.runner_token";
+     # ... keep other settings
+   };
+   ```
+
+4. **Create the token file**:
+   ```bash
+   sudo mkdir -p /var/lib/github-runner
+   sudo nano /var/lib/github-runner/.runner_token
+   # Paste your token (no newline)
+   echo -n 'YOUR_TOKEN_HERE' | sudo tee /var/lib/github-runner/.runner_token
+   sudo chmod 0600 /var/lib/github-runner/.runner_token
+   ```
+
+5. **Rebuild and switch**:
+   ```bash
+   sudo nixos-rebuild switch
+   ```
+
+**Token types**: Use a fine-grained Personal Access Token (PAT) with "Read and Write access to self-hosted runners" scope. Classic PATs with `repo` scope also work.
 
 ## Persistent Paths
 
