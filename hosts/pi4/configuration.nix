@@ -52,8 +52,13 @@
   nix.settings.auto-optimise-store = true;
 
   # ============== GitHub Actions Self-Hosted Runner ==============
+  # The runner is disabled by default in the SD image.
+  # To enable after first boot:
+  # 1. Set the URL to your GitHub repo/org (e.g., "https://github.com/owner/repo")
+  # 2. Set tokenFile to a file containing your runner token
+  # 3. Set enable = true
   services.github-runners.pi4-smoke-test = {
-    enable = true;
+    enable = false;
     name = "pi4-smoke-test";
     extraLabels = [
       "self-hosted"
@@ -62,18 +67,10 @@
       "nixos"
     ];
 
-    # Runner URL and token are provided via filesystem after first boot
-    # User should create these files via SSH after first boot
-    urlFile = "/var/lib/github-runner/.runner_url";
-    tokenFile = "/var/lib/github-runner/.runner_token";
+    # TODO: Configure these after first boot
+    # url = "https://github.com/your-org/your-repo";
+    # tokenFile = "/var/lib/github-runner/.runner_token";
   };
-
-  # Ensure persistent directory exists for GitHub runner
-  systemd.tmpfiles.rules = [
-    "d /var/lib/github-runner 0755 github-runner github-runner -"
-    "f /var/lib/github-runner/.runner_url 0600 github-runner github-runner -"
-    "f /var/lib/github-runner/.runner_token 0600 github-runner github-runner -"
-  ];
 
   # ============== Networking ==============
   networking = {
