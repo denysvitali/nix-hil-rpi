@@ -23,6 +23,17 @@
     generic-extlinux-compatible.enable = true;
   };
 
+  # Enable USB serial kernel modules for ESP32-C3 and similar devices
+  boot.kernelModules = [
+    # USB CDC ACM - standard class for USB serial devices (native ESP32-C3 USB)
+    "cdc-acm"
+    # Generic USB serial support
+    "usbserial"
+    # Common USB-to-UART bridge chips
+    "cp210x"  # Silicon Labs CP2102/CP210N (used on many ESP32-C3 dev kits)
+    "ch341"   # WCH CH340 (used on many budget boards)
+  ];
+
   # Workaround for dw-hdmi module not being included in linux-rpi kernel
   # See: https://github.com/NixOS/nixos-hardware/issues/1745
   boot.initrd.availableKernelModules = lib.mkForce [

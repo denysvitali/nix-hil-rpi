@@ -62,18 +62,16 @@
       "nixos"
     ];
 
-    # Runner storage - token file will be added manually via SSH
-    # See README for setup instructions
-    url = "https://github.com/denysvitali";
-
-    # Token file location (will be created on first boot with placeholder)
-    # User should replace contents with actual GitHub PAT after first boot
+    # Runner URL and token are provided via filesystem after first boot
+    # User should create these files via SSH after first boot
+    urlFile = "/var/lib/github-runner/.runner_url";
     tokenFile = "/var/lib/github-runner/.runner_token";
   };
 
   # Ensure persistent directory exists for GitHub runner
   systemd.tmpfiles.rules = [
     "d /var/lib/github-runner 0755 github-runner github-runner -"
+    "f /var/lib/github-runner/.runner_url 0600 github-runner github-runner -"
     "f /var/lib/github-runner/.runner_token 0600 github-runner github-runner -"
   ];
 
