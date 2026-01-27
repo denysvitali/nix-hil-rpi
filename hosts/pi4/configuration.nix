@@ -62,32 +62,43 @@ in
     setup-tool
   ];
 
-  # ============== First-Boot Setup Service ==============
+  # ============== First-Boot Setup Service =============-
   # Systemd service that runs the setup tool on first boot
   systemd.services.nixos-first-boot-setup = let
     # Wrapper script that runs setup tool and creates flag on success
     setupWrapper = pkgs.writeShellScript "nixos-setup-wrapper" ''
       set -e
-      echo "Starting NixOS first-boot setup..."
-      echo "Press any key to continue or wait 5 seconds..."
-      ${pkgs.coreutils}/bin/sleep 5 || true
+      
+      # Check if we have a usable TTY
+      if [ -t 0 ] && [ -t 1 ]; then
+        echo "Starting NixOS first-boot setup..."
+        echo "Press any key to continue or wait 5 seconds..."
+        ${pkgs.coreutils}/bin/sleep 5 || true
+      fi
 
-      # Run the setup tool
-      if ${setup-tool}/bin/setup-tool; then
-        echo "Setup completed successfully."
-        # Create flag file to prevent future runs
-        touch ${setupCompleteFlag}
-        echo "Created ${setupCompleteFlag}"
+      # Run the setup tool only if we have a TTY, otherwise skip
+      if [ -t 0 ] && [ -t 1 ]; then
+        if ${setup-tool}/bin/setup-tool; then
+          echo "Setup completed successfully."
+          # Create flag file to prevent future runs
+          touch ${setupCompleteFlag}
+          echo "Created ${setupCompleteFlag}"
+        else
+          echo "Setup tool exited with error. You can re-run with: sudo systemctl restart nixos-first-boot-setup"
+          exit 1
+        fi
       else
-        echo "Setup tool exited with error. You can re-run with: sudo systemctl restart nixos-first-boot-setup"
-        exit 1
+        echo "No TTY available, skipping interactive setup."
+        echo "To run setup manually: sudo setup-tool"
+        # Don't create flag - let it run on actual first boot with TTY
+        exit 0
       fi
     '';
   in {
     description = "NixOS First Boot Setup Tool";
     wantedBy = [ "multi-user.target" ];
-    # Run after network is available and on tty1
-    after = [ "network-online.target" "systemd-user-sessions.service" ];
+    # Run after network is available
+    after = [ "network-online.target" "systemd-user-sessions.service" "getty@tty1.service" ];
     requires = [ "network-online.target" ];
 
     # Only run if setup hasn't completed yet
@@ -98,24 +109,26 @@ in
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
-      # Run on tty1 for TUI display
-      StandardInput = "tty";
-      StandardOutput = "tty";
-      StandardError = "tty";
-      TTYPath = "/dev/tty1";
-      TTYReset = true;
-      TTYVHangup = true;
+      # Don't allocate TTY by default - the script checks for TTY availability
+      StandardInput = "null";
+      StandardOutput = "journal";
+      StandardError = "journal";
       # Run as root (required for nixos-rebuild and writing to /etc)
       User = "root";
       Group = "root";
       # Use wrapper script that creates flag on success
       ExecStart = setupWrapper;
+      # Ignore SIGHUP to prevent failures during rebuild
+      IgnoreSIGPIPE = false;
     };
 
-    # Ensure github-runner directories exist before running
+    # Ensure github-runner directories exist before running (only if user exists)
     preStart = ''
       mkdir -p /var/lib/github-runner
-      chown github-runner:github-runner /var/lib/github-runner 2>/dev/null || true
+      # Only chown if github-runner user exists
+      if id -u github-runner >/dev/null 2>&1; then
+        chown github-runner:github-runner /var/lib/github-runner 2>/dev/null || true
+      fi
       chmod 755 /var/lib/github-runner
     '';
   };
