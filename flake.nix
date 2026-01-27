@@ -23,6 +23,9 @@
         inherit system;
         pkgs = nixpkgs.legacyPackages.${system};
       });
+
+      # Setup tool package
+      setupTool = { pkgs }: pkgs.callPackage ./pkgs/setup-tool/default.nix { };
     in
     {
       # Native build on aarch64-linux
@@ -56,6 +59,9 @@
           if system == "aarch64-linux"
           then self.nixosConfigurations.pi4-aarch64.config.system.build.sdImage
           else self.nixosConfigurations.pi4-cross.config.system.build.sdImage;
+
+        # Post-boot configuration TUI tool
+        setup-tool = setupTool { inherit pkgs; };
       });
 
       defaultPackage = forAllSystems ({ system, pkgs }: self.packages.${system}.pi4-sd-image);

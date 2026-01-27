@@ -1,5 +1,12 @@
 { config, pkgs, lib, ... }:
 
+let
+  # Setup tool package for first-boot configuration
+  setup-tool = pkgs.callPackage ../../pkgs/setup-tool/default.nix { };
+
+  # Flag file to track if setup is complete
+  setupCompleteFlag = "/var/lib/.nixos-setup-complete";
+in
 {
   # ============== File Systems ==============
   # fileSystems."/" = {
@@ -12,7 +19,9 @@
     enable = true;
     settings = {
       PermitRootLogin = "prohibit-password";
-      PasswordAuthentication = false;
+      # Password auth enabled for first boot only (until setup completes)
+      # The setup tool will disable password auth after configuring SSH keys
+      PasswordAuthentication = true;
     };
   };
 
@@ -21,6 +30,9 @@
     isNormalUser = true;
     description = "Pi User";
     extraGroups = [ "wheel" "networkmanager" ];
+    # Initial password for first-boot access (user will set SSH keys via setup tool)
+    # Password is "nixos" - should be changed after initial setup
+    initialPassword = "nixos";
     openssh.authorizedKeys.keys = [
       # Fetched from https://github.com/denysvitali.keys
       # Add additional keys here as needed
@@ -45,7 +57,68 @@
     htop
     curl
     wget
+
+    # First-boot setup tool
+    setup-tool
   ];
+
+  # ============== First-Boot Setup Service ==============
+  # Systemd service that runs the setup tool on first boot
+  systemd.services.nixos-first-boot-setup = let
+    # Wrapper script that runs setup tool and creates flag on success
+    setupWrapper = pkgs.writeShellScript "nixos-setup-wrapper" ''
+      set -e
+      echo "Starting NixOS first-boot setup..."
+      echo "Press any key to continue or wait 5 seconds..."
+      ${pkgs.coreutils}/bin/sleep 5 || true
+
+      # Run the setup tool
+      if ${setup-tool}/bin/setup-tool; then
+        echo "Setup completed successfully."
+        # Create flag file to prevent future runs
+        touch ${setupCompleteFlag}
+        echo "Created ${setupCompleteFlag}"
+      else
+        echo "Setup tool exited with error. You can re-run with: sudo systemctl restart nixos-first-boot-setup"
+        exit 1
+      fi
+    '';
+  in {
+    description = "NixOS First Boot Setup Tool";
+    wantedBy = [ "multi-user.target" ];
+    # Run after network is available and on tty1
+    after = [ "network-online.target" "systemd-user-sessions.service" ];
+    requires = [ "network-online.target" ];
+
+    # Only run if setup hasn't completed yet
+    unitConfig = {
+      ConditionPathExists = "!${setupCompleteFlag}";
+    };
+
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+      # Run on tty1 for TUI display
+      StandardInput = "tty";
+      StandardOutput = "tty";
+      StandardError = "tty";
+      TTYPath = "/dev/tty1";
+      TTYReset = true;
+      TTYVHangup = true;
+      # Run as root (required for nixos-rebuild and writing to /etc)
+      User = "root";
+      Group = "root";
+      # Use wrapper script that creates flag on success
+      ExecStart = setupWrapper;
+    };
+
+    # Ensure github-runner directories exist before running
+    preStart = ''
+      mkdir -p /var/lib/github-runner
+      chown github-runner:github-runner /var/lib/github-runner 2>/dev/null || true
+      chmod 755 /var/lib/github-runner
+    '';
+  };
 
   # ============== Nix Daemon for Parallel Builds ==============
   nix.settings.max-jobs = lib.mkDefault 4;
