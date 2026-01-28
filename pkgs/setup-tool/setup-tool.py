@@ -476,9 +476,9 @@ class GitHubRunnerScreen(Screen):
         yield Container(
             Static("Step 2/6: GitHub Actions Runner", classes="step-title"),
             Static("Configure the GitHub Actions self-hosted runner:", classes="step-desc"),
-            Label("Runner Token (Personal Access Token):"),
+            Label("Runner Registration Token:"),
             Input(
-                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx",
+                placeholder="AABC... (from GitHub Actions runner setup page)",
                 id="runner_token",
                 password=True,
             ),
@@ -489,7 +489,7 @@ class GitHubRunnerScreen(Screen):
                 id="runner_url",
             ),
             Static(
-                "[dim]The token should have 'repo' scope for private repos or 'public_repo' for public repos[/dim]",
+                "[dim]Get token: GitHub Repo → Settings → Actions → Runners → New self-hosted runner[/dim]",
                 classes="hint"
             ),
             Static("", id="status_msg"),
@@ -524,10 +524,11 @@ class GitHubRunnerScreen(Screen):
                 )
                 return
 
-            # Basic token format validation
-            if not re.match(r'^(ghp_|ghs_)[a-zA-Z0-9]{36,}$', token):
+            # Runner tokens are typically short alphanumeric strings
+            # Don't validate strictly as formats can vary
+            if len(token) < 10:
                 self.query_one("#status_msg", Static).update(
-                    "[yellow]⚠ Token format looks unusual. Make sure it's a valid PAT[/yellow]"
+                    "[yellow]⚠ Token seems very short. Make sure you copied the full registration token.[/yellow]"
                 )
                 # Don't block, just warn
 
@@ -841,7 +842,9 @@ class ApplyScreen(Screen):
         await asyncio.sleep(0.5)
 
         try:
-            # Create .ssh directory
+            import pwd
+
+            # Create .ssh directory (also creates /home/pi if needed)
             SSH_DIR.mkdir(parents=True, exist_ok=True)
             os.chmod(SSH_DIR, 0o700)
 
@@ -853,9 +856,26 @@ class ApplyScreen(Screen):
                 f.write(state.validated_ssh_key + '\n')
             os.chmod(AUTH_KEYS_FILE, 0o600)
 
-            # Set ownership to pi user
-            shutil.chown(SSH_DIR, "pi", "pi")
-            shutil.chown(AUTH_KEYS_FILE, "pi", "pi")
+            # Try to set ownership to pi user, fallback to root if pi doesn't exist
+            try:
+                pw = pwd.getpwnam("pi")
+                shutil.chown(SSH_DIR, "pi", "pi")
+                shutil.chown(AUTH_KEYS_FILE, "pi", "pi")
+            except KeyError:
+                # pi user doesn't exist, try to detect the first normal user
+                try:
+                    for user in pwd.getpwall():
+                        if user.pw_uid >= 1000 and user.pw_name != "nobody":
+                            shutil.chown(SSH_DIR, user.pw_name, user.pw_name)
+                            shutil.chown(AUTH_KEYS_FILE, user.pw_name, user.pw_name)
+                            status.update(f"[{step}/6] Setting up SSH authorized keys for user {user.pw_name}...")
+                            break
+                    else:
+                        # No normal user found, keep as root
+                        pass
+                except Exception:
+                    # Keep ownership as root if we can't determine user
+                    pass
 
         except Exception as e:
             error_log.update(f"[red]Failed to configure SSH: {e}[/red]")
@@ -869,9 +889,22 @@ class ApplyScreen(Screen):
         await asyncio.sleep(0.5)
 
         try:
+            import pwd
+
             # Ensure runner directory exists with correct permissions
             RUNNER_DIR.mkdir(parents=True, exist_ok=True)
-            shutil.chown(RUNNER_DIR, "github-runner", "github-runner")
+
+            # Try to set ownership to github-runner if user exists
+            try:
+                pwd.getpwnam("github-runner")
+                shutil.chown(RUNNER_DIR, "github-runner", "github-runner")
+                runner_user = "github-runner"
+                runner_group = "github-runner"
+            except KeyError:
+                # github-runner user doesn't exist, use root
+                runner_user = "root"
+                runner_group = "root"
+                status.update(f"[{step}/6] GitHub runner user not found, using root for token files...")
 
             # Backup existing files
             backup_file(RUNNER_TOKEN_FILE)
@@ -881,13 +914,13 @@ class ApplyScreen(Screen):
             with open(RUNNER_TOKEN_FILE, 'w') as f:
                 f.write(state.runner_token + '\n')
             os.chmod(RUNNER_TOKEN_FILE, 0o600)
-            shutil.chown(RUNNER_TOKEN_FILE, "github-runner", "github-runner")
+            shutil.chown(RUNNER_TOKEN_FILE, runner_user, runner_group)
 
             # Write URL
             with open(RUNNER_URL_FILE, 'w') as f:
                 f.write(state.runner_url + '\n')
             os.chmod(RUNNER_URL_FILE, 0o600)
-            shutil.chown(RUNNER_URL_FILE, "github-runner", "github-runner")
+            shutil.chown(RUNNER_URL_FILE, runner_user, runner_group)
 
         except Exception as e:
             error_log.update(f"[red]Failed to configure GitHub runner: {e}[/red]")
