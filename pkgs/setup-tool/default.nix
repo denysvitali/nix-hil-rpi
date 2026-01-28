@@ -10,6 +10,12 @@
   systemd,
 }:
 
+let
+  pythonEnv = python3Packages.python.withPackages (ps: with ps; [
+    textual
+    textual-autocomplete
+  ]);
+in
 python3Packages.buildPythonApplication rec {
   pname = "nixos-rpi-setup-tool";
   version = "1.0.0";
@@ -20,11 +26,6 @@ python3Packages.buildPythonApplication rec {
 
   nativeBuildInputs = [
     makeWrapper
-  ];
-
-  propagatedBuildInputs = with python3Packages; [
-    textual
-    textual-autocomplete
   ];
 
   dontUnpack = true;
@@ -41,8 +42,8 @@ python3Packages.buildPythonApplication rec {
     # Copy the main script
     cp ${src}/setup-tool.py $out/share/${pname}/
 
-    # Create wrapper script
-    makeWrapper ${python3Packages.python}/bin/python $out/bin/setup-tool \
+    # Create wrapper script using pythonEnv which includes all packages
+    makeWrapper ${pythonEnv}/bin/python $out/bin/setup-tool \
       --add-flags "$out/share/${pname}/setup-tool.py" \
       --prefix PATH : "${lib.makeBinPath [
         iw
