@@ -374,26 +374,69 @@ def configure_wifi(ssid: str, password: str, enable: bool) -> bool:
         return False
 
 
+def find_nixos_config() -> Optional[Path]:
+    """Find the NixOS configuration file."""
+    # Common locations
+    possible_paths = [
+        Path("/etc/nixos/configuration.nix"),
+        Path("/etc/nixos/flake.nix"),
+        Path("/nix/var/nixos/configuration.nix"),
+    ]
+    for path in possible_paths:
+        if path.exists():
+            return path
+    return None
+
+
 def run_nixos_rebuild() -> bool:
     """Run nixos-rebuild switch."""
     print("\n[6/6] Running nixos-rebuild switch...")
     print("  (This may take a few minutes)")
+
+    # Check if NixOS config exists
+    config_path = find_nixos_config()
+    if not config_path:
+        print("  ⚠ No NixOS configuration found at /etc/nixos/")
+        print("  Skipping nixos-rebuild. You'll need to run it manually after")
+        print("  ensuring your NixOS configuration is in place.")
+        return True  # Not a fatal error
+
+    # Check if we're in a flake-based setup
+    is_flake = config_path.name == "flake.nix" or (config_path.parent / "flake.nix").exists()
 
     try:
         # Enable experimental features needed for flakes
         env = os.environ.copy()
         env["NIX_CONFIG"] = "experimental-features = nix-command flakes"
 
-        result = subprocess.run(
-            ["nixos-rebuild", "switch"],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        if is_flake:
+            # For flake-based configs, use the flake
+            print(f"  Using flake configuration: {config_path.parent}")
+            result = subprocess.run(
+                ["nixos-rebuild", "switch", "--flake", str(config_path.parent)],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        else:
+            # For traditional configs, ensure NIX_PATH is set
+            if "NIX_PATH" not in env:
+                env["NIX_PATH"] = "nixos-config=/etc/nixos/configuration.nix:/nix/var/nix/profiles/per-user/root/channels"
+            result = subprocess.run(
+                ["nixos-rebuild", "switch"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
 
         if result.returncode != 0:
-            error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
+            error_msg = result.stderr[-1000:] if result.stderr else "Unknown error"
             print(f"  ✗ nixos-rebuild failed:\n{error_msg}")
+            print("\n  You can try running manually:")
+            if is_flake:
+                print(f"    sudo nixos-rebuild switch --flake {config_path.parent}")
+            else:
+                print("    sudo nixos-rebuild switch")
             return False
 
         print("  ✓ Configuration applied successfully")
