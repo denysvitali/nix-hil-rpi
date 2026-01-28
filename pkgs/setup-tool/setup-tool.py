@@ -997,11 +997,16 @@ class ApplyScreen(Screen):
         await asyncio.sleep(0.5)
 
         try:
-            # Run nixos-rebuild switch
+            # Run nixos-rebuild switch with flakes support
+            # Enable experimental features needed for flakes
+            env = os.environ.copy()
+            env["NIX_CONFIG"] = "experimental-features = nix-command flakes"
+
             result = await asyncio.create_subprocess_exec(
                 "nixos-rebuild", "switch",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             stdout, stderr = await result.communicate()
 
