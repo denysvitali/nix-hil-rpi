@@ -39,7 +39,7 @@ from textual.reactive import reactive
 from textual.binding import Binding
 
 # Output file paths
-SSH_DIR = Path("/home/pi/.ssh")
+SSH_DIR = Path("/root/.ssh")
 AUTH_KEYS_FILE = SSH_DIR / "authorized_keys"
 RUNNER_DIR = Path("/var/lib/github-runner")
 RUNNER_TOKEN_FILE = RUNNER_DIR / ".runner_token"
@@ -225,7 +225,7 @@ class WelcomeScreen(Screen):
 Welcome! This tool will help you configure your NixOS Raspberry Pi after the first boot.
 
 [bold cyan]Required Configuration:[/bold cyan]
-  • SSH Authorized Keys (enables SSH access)
+  • SSH Authorized Keys for root (enables SSH access)
   • GitHub Actions Runner Token
   • GitHub Actions Runner URL
 
@@ -734,7 +734,7 @@ class SummaryScreen(Screen):
     def compose(self) -> ComposeResult:
         # Build summary text
         ssh_summary = f"""
-[bold cyan]SSH Configuration:[/bold cyan]
+[bold cyan]SSH Configuration (for root):[/bold cyan]
   Method: {state.ssh_method or 'Unknown'}
   Key count: {len(state.validated_ssh_key.split(chr(10))) if state.validated_ssh_key else 0} key(s)
 """
@@ -842,9 +842,7 @@ class ApplyScreen(Screen):
         await asyncio.sleep(0.5)
 
         try:
-            import pwd
-
-            # Create .ssh directory (also creates /home/pi if needed)
+            # Create .ssh directory for root
             SSH_DIR.mkdir(parents=True, exist_ok=True)
             os.chmod(SSH_DIR, 0o700)
 
@@ -856,26 +854,9 @@ class ApplyScreen(Screen):
                 f.write(state.validated_ssh_key + '\n')
             os.chmod(AUTH_KEYS_FILE, 0o600)
 
-            # Try to set ownership to pi user, fallback to root if pi doesn't exist
-            try:
-                pw = pwd.getpwnam("pi")
-                shutil.chown(SSH_DIR, "pi", "pi")
-                shutil.chown(AUTH_KEYS_FILE, "pi", "pi")
-            except KeyError:
-                # pi user doesn't exist, try to detect the first normal user
-                try:
-                    for user in pwd.getpwall():
-                        if user.pw_uid >= 1000 and user.pw_name != "nobody":
-                            shutil.chown(SSH_DIR, user.pw_name, user.pw_name)
-                            shutil.chown(AUTH_KEYS_FILE, user.pw_name, user.pw_name)
-                            status.update(f"[{step}/6] Setting up SSH authorized keys for user {user.pw_name}...")
-                            break
-                    else:
-                        # No normal user found, keep as root
-                        pass
-                except Exception:
-                    # Keep ownership as root if we can't determine user
-                    pass
+            # Set ownership to root (we're running as root)
+            shutil.chown(SSH_DIR, "root", "root")
+            shutil.chown(AUTH_KEYS_FILE, "root", "root")
 
         except Exception as e:
             error_log.update(f"[red]Failed to configure SSH: {e}[/red]")
@@ -1044,7 +1025,7 @@ class ApplyScreen(Screen):
 [bold green]✓ Configuration applied successfully![/bold green]
 
 [bold]Summary of changes:[/bold]
-  • SSH authorized keys configured
+  • SSH authorized keys configured for root
   • GitHub Actions runner configured
   • Hostname set to: {hostname}
   • Timezone set to: {timezone}
