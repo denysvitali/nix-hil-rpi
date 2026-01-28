@@ -1,42 +1,21 @@
 #!/usr/bin/env python3
 """
 NixOS Raspberry Pi Post-Boot Configuration Tool
-A TUI-based setup wizard for configuring SSH keys, GitHub Actions runner,
+A CLI-based setup wizard for configuring SSH keys, GitHub Actions runner,
 hostname, timezone, and WiFi credentials.
 """
 
-import asyncio
+import argparse
 import os
 import re
 import shutil
 import subprocess
-import tempfile
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from urllib.request import urlopen
 from urllib.error import URLError
-
-from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.screen import Screen
-from textual.widgets import (
-    Button,
-    Header,
-    Footer,
-    Input,
-    Label,
-    Static,
-    Select,
-    RadioSet,
-    RadioButton,
-    Checkbox,
-    TextArea,
-    Markdown,
-    ProgressBar,
-)
-from textual.reactive import reactive
-from textual.binding import Binding
 
 # Output file paths
 SSH_DIR = Path("/root/.ssh")
@@ -50,32 +29,6 @@ NIXOS_CONFIG_DIR = Path("/etc/nixos")
 DEFAULT_HOSTNAME = "pi4-smoke-test"
 DEFAULT_TIMEZONE = "UTC"
 DEFAULT_RUNNER_URL = "https://github.com/denysvitali/nix-hil-rpi"
-
-
-class SetupState:
-    """Holds the configuration state throughout the setup process."""
-
-    def __init__(self):
-        self.ssh_method: Optional[str] = None
-        self.ssh_github_username: str = ""
-        self.ssh_public_key: str = ""
-        self.ssh_file_path: str = ""
-        self.validated_ssh_key: str = ""
-
-        self.runner_token: str = ""
-        self.runner_url: str = DEFAULT_RUNNER_URL
-
-        self.hostname: str = DEFAULT_HOSTNAME
-        self.timezone: str = DEFAULT_TIMEZONE
-        self.configure_wifi: bool = False
-        self.wifi_ssid: str = ""
-        self.wifi_password: str = ""
-
-        self.errors: list[str] = []
-
-
-# Global state
-state = SetupState()
 
 
 def validate_ssh_key(key: str) -> tuple[bool, str]:
@@ -146,25 +99,6 @@ def read_key_from_file(path: str) -> tuple[bool, str]:
         return False, f"Error reading file: {e}"
 
 
-def detect_wifi_interface() -> Optional[str]:
-    """Detect if there's a WiFi interface."""
-    try:
-        result = subprocess.run(
-            ["iw", "dev"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        if result.returncode == 0 and "Interface" in result.stdout:
-            # Extract interface name
-            match = re.search(r'Interface\s+(\w+)', result.stdout)
-            if match:
-                return match.group(1)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        pass
-    return None
-
-
 def get_timezones() -> list[str]:
     """Get list of available timezones."""
     try:
@@ -202,962 +136,390 @@ def backup_file(path: Path) -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = Path(f"{path}.backup.{timestamp}")
         shutil.copy2(path, backup_path)
-
-
-class WelcomeScreen(Screen):
-    """Welcome screen with introduction."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("""
-┌─────────────────────────────────────────────────────────────────┐
-│                                                                 │
-│     🍓 NixOS Raspberry Pi 4 Post-Boot Configuration Tool 🍓     │
-│                                                                 │
-└─────────────────────────────────────────────────────────────────┘
-            """, classes="banner"),
-            Static("""
-Welcome! This tool will help you configure your NixOS Raspberry Pi after the first boot.
-
-[bold cyan]Required Configuration:[/bold cyan]
-  • SSH Authorized Keys for root (enables SSH access)
-  • GitHub Actions Runner Token
-  • GitHub Actions Runner URL
-
-[bold cyan]Optional Configuration:[/bold cyan]
-  • Hostname (default: pi4-smoke-test)
-  • Timezone (default: UTC)
-  • WiFi Credentials (if WiFi interface detected)
-
-[bold yellow]Note:[/bold yellow] SSH is currently configured without any authorized keys,
-which means you cannot log in via SSH until you complete this setup.
-
-Press [bold green]Start[/bold green] to begin the configuration process.
-            """, classes="welcome-text"),
-            Horizontal(
-                Button("▶ Start Configuration", variant="success", id="start"),
-                Button("✕ Quit", variant="error", id="quit"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "start":
-            self.app.push_screen(SSHMethodScreen())
-        elif event.button.id == "quit":
-            self.app.exit()
-
-
-class SSHMethodScreen(Screen):
-    """Screen to select SSH key input method."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 1/6: SSH Key Configuration", classes="step-title"),
-            Static("Select how you want to provide your SSH public key:", classes="step-desc"),
-            RadioSet(
-                RadioButton("Fetch from GitHub username", id="github", value=True),
-                RadioButton("Paste public key directly", id="paste"),
-                RadioButton("Load from USB/SD card file", id="file"),
-                id="ssh_method",
-            ),
-            Static("", id="error_msg", classes="error"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Continue →", variant="primary", id="continue"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "continue":
-            radio_set = self.query_one("#ssh_method", RadioSet)
-            selected = radio_set.pressed_button
-            if selected:
-                state.ssh_method = selected.id
-                if state.ssh_method == "github":
-                    self.app.push_screen(SSHGithubScreen())
-                elif state.ssh_method == "paste":
-                    self.app.push_screen(SSHPasteScreen())
-                elif state.ssh_method == "file":
-                    self.app.push_screen(SSHFileScreen())
-
-
-class SSHGithubScreen(Screen):
-    """Screen to input GitHub username."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 1/6: SSH Key from GitHub", classes="step-title"),
-            Static("Enter your GitHub username to fetch your public SSH keys:", classes="step-desc"),
-            Input(placeholder="GitHub username (e.g., denysvitali)", id="username"),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Fetch & Continue →", variant="primary", id="continue"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "continue":
-            username = self.query_one("#username", Input).value.strip()
-            if not username:
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Please enter a GitHub username[/red]"
-                )
-                return
-
-            self.query_one("#status_msg", Static).update(
-                "[yellow]⟳ Fetching keys from GitHub...[/yellow]"
-            )
-
-            success, result = fetch_github_keys(username)
-            if success:
-                # Validate the keys
-                keys = result.split('\n')
-                valid_keys = []
-                for key in keys:
-                    key = key.strip()
-                    if key:
-                        is_valid, _ = validate_ssh_key(key)
-                        if is_valid:
-                            valid_keys.append(key)
-
-                if valid_keys:
-                    state.ssh_github_username = username
-                    state.validated_ssh_key = '\n'.join(valid_keys)
-                    self.app.push_screen(GitHubRunnerScreen())
-                else:
-                    self.query_one("#status_msg", Static).update(
-                        "[red]✗ No valid SSH keys found in GitHub response[/red]"
-                    )
-            else:
-                self.query_one("#status_msg", Static).update(f"[red]✗ {result}[/red]")
-
-
-class SSHPasteScreen(Screen):
-    """Screen to paste SSH public key directly."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 1/6: Paste SSH Public Key", classes="step-title"),
-            Static("Paste your SSH public key (e.g., ssh-ed25519 AAAAC3NzaC...):", classes="step-desc"),
-            TextArea(id="ssh_key", language=None, show_line_numbers=False),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Validate & Continue →", variant="primary", id="continue"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "continue":
-            key = self.query_one("#ssh_key", TextArea).text.strip()
-            is_valid, message = validate_ssh_key(key)
-
-            if is_valid:
-                state.ssh_public_key = key
-                state.validated_ssh_key = key
-                self.app.push_screen(GitHubRunnerScreen())
-            else:
-                self.query_one("#status_msg", Static).update(f"[red]✗ {message}[/red]")
-
-
-class SSHFileScreen(Screen):
-    """Screen to load SSH key from file."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 1/6: Load SSH Key from File", classes="step-title"),
-            Static("Enter the path to your SSH public key file:", classes="step-desc"),
-            Static("[dim]Common locations: /mnt/usb/id_rsa.pub, /boot/ssh_key.pub[/dim]", classes="hint"),
-            Input(placeholder="/path/to/your/key.pub", id="file_path"),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Load & Continue →", variant="primary", id="continue"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "continue":
-            file_path = self.query_one("#file_path", Input).value.strip()
-            if not file_path:
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Please enter a file path[/red]"
-                )
-                return
-
-            success, result = read_key_from_file(file_path)
-            if success:
-                is_valid, message = validate_ssh_key(result)
-                if is_valid:
-                    state.ssh_file_path = file_path
-                    state.validated_ssh_key = result
-                    self.app.push_screen(GitHubRunnerScreen())
-                else:
-                    self.query_one("#status_msg", Static).update(f"[red]✗ {message}[/red]")
-            else:
-                self.query_one("#status_msg", Static).update(f"[red]✗ {result}[/red]")
-
-
-class GitHubRunnerScreen(Screen):
-    """Screen to configure GitHub Actions runner."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 2/6: GitHub Actions Runner", classes="step-title"),
-            Static("Configure the GitHub Actions self-hosted runner:", classes="step-desc"),
-            Label("Runner Registration Token:"),
-            Input(
-                placeholder="AABC... (from GitHub Actions runner setup page)",
-                id="runner_token",
-                password=True,
-            ),
-            Label("Runner URL:"),
-            Input(
-                value=DEFAULT_RUNNER_URL,
-                placeholder="https://github.com/OWNER/REPO",
-                id="runner_url",
-            ),
-            Static(
-                "[dim]Get token: GitHub Repo → Settings → Actions → Runners → New self-hosted runner[/dim]",
-                classes="hint"
-            ),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Continue →", variant="primary", id="continue"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "continue":
-            token = self.query_one("#runner_token", Input).value.strip()
-            url = self.query_one("#runner_url", Input).value.strip()
-
-            if not token:
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Runner token is required[/red]"
-                )
-                return
-
-            if not url:
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Runner URL is required[/red]"
-                )
-                return
-
-            # Runner tokens are typically short alphanumeric strings
-            # Don't validate strictly as formats can vary
-            if len(token) < 10:
-                self.query_one("#status_msg", Static).update(
-                    "[yellow]⚠ Token seems very short. Make sure you copied the full registration token.[/yellow]"
-                )
-                # Don't block, just warn
-
-            state.runner_token = token
-            state.runner_url = url
-            self.app.push_screen(HostNameScreen())
-
-
-class HostNameScreen(Screen):
-    """Screen to configure hostname."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 3/6: Hostname (Optional)", classes="step-title"),
-            Static("Set the hostname for this Raspberry Pi:", classes="step-desc"),
-            Input(
-                value=DEFAULT_HOSTNAME,
-                placeholder="pi4-smoke-test",
-                id="hostname",
-            ),
-            Static(
-                "[dim]Hostname must contain only letters, numbers, and hyphens[/dim]",
-                classes="hint"
-            ),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Continue →", variant="primary", id="continue"),
-                Button("Skip →", id="skip"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "skip":
-            self.app.push_screen(TimezoneScreen())
-        elif event.button.id == "continue":
-            hostname = self.query_one("#hostname", Input).value.strip()
-
-            if not hostname:
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Hostname cannot be empty[/red]"
-                )
-                return
-
-            # Validate hostname format
-            if not re.match(r'^[a-zA-Z0-9-]+$', hostname):
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Hostname contains invalid characters[/red]"
-                )
-                return
-
-            if len(hostname) > 63:
-                self.query_one("#status_msg", Static).update(
-                    "[red]✗ Hostname too long (max 63 characters)[/red]"
-                )
-                return
-
-            state.hostname = hostname
-            self.app.push_screen(TimezoneScreen())
-
-
-class TimezoneScreen(Screen):
-    """Screen to select timezone."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        timezones = get_timezones()
-        default_index = timezones.index(DEFAULT_TIMEZONE) if DEFAULT_TIMEZONE in timezones else 0
-
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 4/6: Timezone (Optional)", classes="step-title"),
-            Static("Select your timezone:", classes="step-desc"),
-            Select(
-                [(tz, tz) for tz in timezones],
-                value=timezones[default_index] if timezones else None,
-                id="timezone",
-            ),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Continue →", variant="primary", id="continue"),
-                Button("Skip →", id="skip"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id in ("continue", "skip"):
-            if event.button.id == "continue":
-                timezone_select = self.query_one("#timezone", Select)
-                if timezone_select.value:
-                    state.timezone = str(timezone_select.value)
-
-            # Check for WiFi interface
-            wifi_iface = detect_wifi_interface()
-            if wifi_iface:
-                self.app.push_screen(WiFiScreen())
-            else:
-                # Skip WiFi if no interface detected
-                self.app.push_screen(SummaryScreen())
-
-
-class WiFiScreen(Screen):
-    """Screen to configure WiFi credentials."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Step 5/6: WiFi Configuration (Optional)", classes="step-title"),
-            Static(f"WiFi interface detected. Configure WiFi credentials?", classes="step-desc"),
-            Checkbox("Configure WiFi", id="configure_wifi"),
-            Label("SSID (Network Name):"),
-            Input(placeholder="MyWiFiNetwork", id="wifi_ssid"),
-            Label("Password:"),
-            Input(placeholder="WiFi password", id="wifi_password", password=True),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("Continue →", variant="primary", id="continue"),
-                Button("Skip WiFi →", id="skip"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "skip":
-            state.configure_wifi = False
-            self.app.push_screen(SummaryScreen())
-        elif event.button.id == "continue":
-            configure = self.query_one("#configure_wifi", Checkbox).value
-
-            if configure:
-                ssid = self.query_one("#wifi_ssid", Input).value.strip()
-                password = self.query_one("#wifi_password", Input).value.strip()
-
-                if not ssid:
-                    self.query_one("#status_msg", Static).update(
-                        "[red]✗ SSID cannot be empty[/red]"
-                    )
-                    return
-
-                if len(password) < 8:
-                    self.query_one("#status_msg", Static).update(
-                        "[red]✗ WiFi password must be at least 8 characters[/red]"
-                    )
-                    return
-
-                state.configure_wifi = True
-                state.wifi_ssid = ssid
-                state.wifi_password = password
-            else:
-                state.configure_wifi = False
-
-            self.app.push_screen(SummaryScreen())
-
-
-class SummaryScreen(Screen):
-    """Screen showing summary of all configuration."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("b", "back", "Back"),
-    ]
-
-    def compose(self) -> ComposeResult:
-        # Build summary text
-        ssh_summary = f"""
-[bold cyan]SSH Configuration (for root):[/bold cyan]
-  Method: {state.ssh_method or 'Unknown'}
-  Key count: {len(state.validated_ssh_key.split(chr(10))) if state.validated_ssh_key else 0} key(s)
-"""
-
-        runner_summary = f"""
-[bold cyan]GitHub Runner:[/bold cyan]
-  URL: {state.runner_url}
-  Token: {'*' * min(len(state.runner_token), 8) if state.runner_token else 'Not set'}
-"""
-
-        system_summary = f"""
-[bold cyan]System Configuration:[/bold cyan]
-  Hostname: {state.hostname}
-  Timezone: {state.timezone}
-"""
-
-        wifi_summary = ""
-        if state.configure_wifi:
-            wifi_summary = f"""
-[bold cyan]WiFi Configuration:[/bold cyan]
-  SSID: {state.wifi_ssid}
-  Password: {'*' * len(state.wifi_password)}
-"""
-        else:
-            wifi_summary = """
-[bold cyan]WiFi Configuration:[/bold cyan]
-  Skipped (or no WiFi interface detected)
-"""
-
-        summary_text = f"""
-[bold]Step 6/6: Configuration Summary[/bold]
-
-Please review your configuration before applying:
-
-{ssh_summary}
-{runner_summary}
-{system_summary}
-{wifi_summary}
-
-[bold yellow]⚠ Warning:[/bold yellow] This will:
-  • Create backups of existing configuration files
-  • Write new configuration files
-  • Run 'nixos-rebuild switch' to apply changes
-
-The system may restart services during this process.
-"""
-
-        yield Header(show_clock=True)
-        yield Container(
-            Markdown(summary_text, id="summary"),
-            Static("", id="status_msg"),
-            Horizontal(
-                Button("← Back", id="back"),
-                Button("✓ Apply Configuration", variant="success", id="apply"),
-                Button("✕ Cancel", variant="error", id="cancel"),
-                classes="buttons",
-            ),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "cancel":
-            self.app.exit()
-        elif event.button.id == "back":
-            self.app.pop_screen()
-        elif event.button.id == "apply":
-            self.app.push_screen(ApplyScreen())
-
-
-class ApplyScreen(Screen):
-    """Screen for applying configuration."""
-
-    BINDINGS = []
-
-    def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-        yield Container(
-            Static("Applying Configuration", classes="step-title"),
-            Static("Please wait while the configuration is being applied...", classes="step-desc"),
-            ProgressBar(total=6, id="progress"),
-            Static("", id="status_log"),
-            Static("", id="error_log", classes="error"),
-            Button("Exit", id="exit", disabled=True, classes="hidden"),
-            classes="centered",
-        )
-        yield Footer()
-
-    def on_mount(self) -> None:
-        """Start applying configuration when screen mounts."""
-        self.apply_task = asyncio.create_task(self.apply_configuration())
-
-    async def apply_configuration(self) -> None:
-        """Apply all configuration changes."""
-        progress = self.query_one("#progress", ProgressBar)
-        status = self.query_one("#status_log", Static)
-        error_log = self.query_one("#error_log", Static)
-
-        step = 0
-
-        # Step 1: Create SSH directory and write authorized_keys
-        step += 1
-        progress.update(progress=step)
-        status.update(f"[{step}/6] Setting up SSH authorized keys...")
-        await asyncio.sleep(0.5)
-
-        try:
-            # Create .ssh directory for root
-            SSH_DIR.mkdir(parents=True, exist_ok=True)
-            os.chmod(SSH_DIR, 0o700)
-
-            # Backup existing authorized_keys
-            backup_file(AUTH_KEYS_FILE)
-
-            # Write new authorized_keys
-            with open(AUTH_KEYS_FILE, 'w') as f:
-                f.write(state.validated_ssh_key + '\n')
-            os.chmod(AUTH_KEYS_FILE, 0o600)
-
-            # Set ownership to root (we're running as root)
-            shutil.chown(SSH_DIR, "root", "root")
-            shutil.chown(AUTH_KEYS_FILE, "root", "root")
-
-        except Exception as e:
-            error_log.update(f"[red]Failed to configure SSH: {e}[/red]")
-            self.show_exit_button()
-            return
-
-        # Step 2: Write GitHub runner token
-        step += 1
-        progress.update(progress=step)
-        status.update(f"[{step}/6] Writing GitHub runner token...")
-        await asyncio.sleep(0.5)
-
-        try:
-            import pwd
-
-            # Ensure runner directory exists with correct permissions
-            RUNNER_DIR.mkdir(parents=True, exist_ok=True)
-
-            # Try to set ownership to github-runner if user exists
+        print(f"  Backed up: {path} -> {backup_path}")
+
+
+def prompt_ssh_key() -> tuple[bool, str]:
+    """Prompt user for SSH key."""
+    print("\n" + "="*60)
+    print("Step 1: SSH Key Configuration")
+    print("="*60)
+    print("\nHow would you like to provide your SSH public key?")
+    print("1. Fetch from GitHub username")
+    print("2. Paste public key directly")
+    print("3. Load from file")
+    print("4. Skip (not recommended)")
+
+    choice = input("\nChoice (1-4): ").strip()
+
+    if choice == "1":
+        username = input("GitHub username: ").strip()
+        if not username:
+            print("Error: Username required")
+            return False, ""
+        print(f"Fetching keys for {username}...")
+        return fetch_github_keys(username)
+
+    elif choice == "2":
+        print("\nPaste your SSH public key (press Enter twice when done):")
+        lines = []
+        while True:
             try:
-                pwd.getpwnam("github-runner")
-                shutil.chown(RUNNER_DIR, "github-runner", "github-runner")
-                runner_user = "github-runner"
-                runner_group = "github-runner"
-            except KeyError:
-                # github-runner user doesn't exist, use root
-                runner_user = "root"
-                runner_group = "root"
-                status.update(f"[{step}/6] GitHub runner user not found, using root for token files...")
+                line = input()
+                if line.strip() == "" and lines:
+                    break
+                if line:
+                    lines.append(line)
+            except EOFError:
+                break
+        key = "\n".join(lines).strip()
+        is_valid, msg = validate_ssh_key(key)
+        if is_valid:
+            return True, key
+        else:
+            print(f"Error: {msg}")
+            return False, ""
 
-            # Backup existing files
-            backup_file(RUNNER_TOKEN_FILE)
-            backup_file(RUNNER_URL_FILE)
+    elif choice == "3":
+        path = input("File path: ").strip()
+        return read_key_from_file(path)
 
-            # Write token
-            with open(RUNNER_TOKEN_FILE, 'w') as f:
-                f.write(state.runner_token + '\n')
-            os.chmod(RUNNER_TOKEN_FILE, 0o600)
-            shutil.chown(RUNNER_TOKEN_FILE, runner_user, runner_group)
+    else:
+        print("Skipping SSH key configuration.")
+        return False, ""
 
-            # Write URL
-            with open(RUNNER_URL_FILE, 'w') as f:
-                f.write(state.runner_url + '\n')
-            os.chmod(RUNNER_URL_FILE, 0o600)
-            shutil.chown(RUNNER_URL_FILE, runner_user, runner_group)
 
-        except Exception as e:
-            error_log.update(f"[red]Failed to configure GitHub runner: {e}[/red]")
-            self.show_exit_button()
-            return
+def prompt_input(prompt: str, default: str = "", required: bool = True, password: bool = False) -> str:
+    """Prompt for input with optional default value."""
+    if default:
+        full_prompt = f"{prompt} [{default}]: "
+    else:
+        full_prompt = f"{prompt}: "
 
-        # Step 3: Generate hostname.nix
-        step += 1
-        progress.update(progress=step)
-        status.update(f"[{step}/6] Generating hostname configuration...")
-        await asyncio.sleep(0.5)
+    if password:
+        import getpass
+        value = getpass.getpass(full_prompt)
+    else:
+        value = input(full_prompt)
 
+    value = value.strip()
+    if not value:
+        value = default
+
+    if required and not value:
+        print("Error: This field is required")
+        return prompt_input(prompt, default, required, password)
+
+    return value
+
+
+def configure_ssh(ssh_key: str) -> bool:
+    """Configure SSH authorized keys."""
+    print("\n[1/6] Configuring SSH authorized keys...")
+
+    try:
+        # Create .ssh directory for root
+        SSH_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(SSH_DIR, 0o700)
+
+        # Backup existing authorized_keys
+        backup_file(AUTH_KEYS_FILE)
+
+        # Write new authorized_keys
+        with open(AUTH_KEYS_FILE, 'w') as f:
+            f.write(ssh_key + '\n')
+        os.chmod(AUTH_KEYS_FILE, 0o600)
+
+        # Set ownership to root (we're running as root)
+        shutil.chown(SSH_DIR, "root", "root")
+        shutil.chown(AUTH_KEYS_FILE, "root", "root")
+
+        print("  ✓ SSH keys configured")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ Failed to configure SSH: {e}")
+        return False
+
+
+def configure_runner(token: str, url: str) -> bool:
+    """Configure GitHub Actions runner."""
+    print("\n[2/6] Configuring GitHub Actions runner...")
+
+    try:
+        import pwd
+
+        # Ensure runner directory exists with correct permissions
+        RUNNER_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Try to set ownership to github-runner if user exists
         try:
-            NIXOS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+            pwd.getpwnam("github-runner")
+            shutil.chown(RUNNER_DIR, "github-runner", "github-runner")
+            runner_user = "github-runner"
+            runner_group = "github-runner"
+        except KeyError:
+            # github-runner user doesn't exist, use root
+            runner_user = "root"
+            runner_group = "root"
+            print("  Note: github-runner user not found, using root")
 
-            hostname_nix = f'''# Generated by NixOS Raspberry Pi setup tool
+        # Backup existing files
+        backup_file(RUNNER_TOKEN_FILE)
+        backup_file(RUNNER_URL_FILE)
+
+        # Write token
+        with open(RUNNER_TOKEN_FILE, 'w') as f:
+            f.write(token + '\n')
+        os.chmod(RUNNER_TOKEN_FILE, 0o600)
+        shutil.chown(RUNNER_TOKEN_FILE, runner_user, runner_group)
+
+        # Write URL
+        with open(RUNNER_URL_FILE, 'w') as f:
+            f.write(url + '\n')
+        os.chmod(RUNNER_URL_FILE, 0o600)
+        shutil.chown(RUNNER_URL_FILE, runner_user, runner_group)
+
+        print("  ✓ GitHub runner configured")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ Failed to configure GitHub runner: {e}")
+        return False
+
+
+def configure_hostname(hostname: str) -> bool:
+    """Generate hostname configuration."""
+    print("\n[3/6] Configuring hostname...")
+
+    try:
+        NIXOS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+        hostname_nix = f'''# Generated by NixOS Raspberry Pi setup tool
 {{ config, pkgs, lib, ... }}:
 {{
-  networking.hostName = "{state.hostname}";
+  networking.hostName = "{hostname}";
 }}
 '''
-            backup_file(NIXOS_CONFIG_DIR / "hostname.nix")
-            with open(NIXOS_CONFIG_DIR / "hostname.nix", 'w') as f:
-                f.write(hostname_nix)
+        backup_file(NIXOS_CONFIG_DIR / "hostname.nix")
+        with open(NIXOS_CONFIG_DIR / "hostname.nix", 'w') as f:
+            f.write(hostname_nix)
 
-        except Exception as e:
-            error_log.update(f"[red]Failed to configure hostname: {e}[/red]")
-            self.show_exit_button()
-            return
+        print(f"  ✓ Hostname set to: {hostname}")
+        return True
 
-        # Step 4: Generate timezone.nix
-        step += 1
-        progress.update(progress=step)
-        status.update(f"[{step}/6] Generating timezone configuration...")
-        await asyncio.sleep(0.5)
+    except Exception as e:
+        print(f"  ✗ Failed to configure hostname: {e}")
+        return False
 
-        try:
-            timezone_nix = f'''# Generated by NixOS Raspberry Pi setup tool
+
+def configure_timezone(timezone: str) -> bool:
+    """Generate timezone configuration."""
+    print("\n[4/6] Configuring timezone...")
+
+    try:
+        timezone_nix = f'''# Generated by NixOS Raspberry Pi setup tool
 {{ config, pkgs, lib, ... }}:
 {{
-  time.timeZone = "{state.timezone}";
+  time.timeZone = "{timezone}";
 }}
 '''
-            backup_file(NIXOS_CONFIG_DIR / "timezone.nix")
-            with open(NIXOS_CONFIG_DIR / "timezone.nix", 'w') as f:
-                f.write(timezone_nix)
+        backup_file(NIXOS_CONFIG_DIR / "timezone.nix")
+        with open(NIXOS_CONFIG_DIR / "timezone.nix", 'w') as f:
+            f.write(timezone_nix)
 
-        except Exception as e:
-            error_log.update(f"[red]Failed to configure timezone: {e}[/red]")
-            self.show_exit_button()
-            return
+        print(f"  ✓ Timezone set to: {timezone}")
+        return True
 
-        # Step 5: Generate wifi.nix (if configured)
-        step += 1
-        progress.update(progress=step)
-        status.update(f"[{step}/6] Generating WiFi configuration...")
-        await asyncio.sleep(0.5)
+    except Exception as e:
+        print(f"  ✗ Failed to configure timezone: {e}")
+        return False
 
-        try:
-            if state.configure_wifi:
-                wifi_nix = f'''# Generated by NixOS Raspberry Pi setup tool
+
+def configure_wifi(ssid: str, password: str, enable: bool) -> bool:
+    """Generate WiFi configuration."""
+    print("\n[5/6] Configuring WiFi...")
+
+    try:
+        if enable and ssid:
+            wifi_nix = f'''# Generated by NixOS Raspberry Pi setup tool
 {{ config, pkgs, lib, ... }}:
 {{
   networking.wireless = {{
     enable = true;
     networks = {{
-      "{state.wifi_ssid}" = {{
-        psk = "{state.wifi_password}";
+      "{ssid}" = {{
+        psk = "{password}";
       }};
     }};
   }};
 }}
 '''
-                backup_file(NIXOS_CONFIG_DIR / "wifi.nix")
-                with open(NIXOS_CONFIG_DIR / "wifi.nix", 'w') as f:
-                    f.write(wifi_nix)
-            else:
-                # Remove wifi.nix if it exists and we're not configuring WiFi
-                wifi_nix_path = NIXOS_CONFIG_DIR / "wifi.nix"
-                if wifi_nix_path.exists():
-                    backup_file(wifi_nix_path)
-                    wifi_nix_path.unlink()
+            backup_file(NIXOS_CONFIG_DIR / "wifi.nix")
+            with open(NIXOS_CONFIG_DIR / "wifi.nix", 'w') as f:
+                f.write(wifi_nix)
+            print(f"  ✓ WiFi configured for network: {ssid}")
+        else:
+            # Remove wifi.nix if it exists and we're not configuring WiFi
+            wifi_nix_path = NIXOS_CONFIG_DIR / "wifi.nix"
+            if wifi_nix_path.exists():
+                backup_file(wifi_nix_path)
+                wifi_nix_path.unlink()
+            print("  ✓ WiFi configuration skipped")
 
-        except Exception as e:
-            error_log.update(f"[red]Failed to configure WiFi: {e}[/red]")
-            self.show_exit_button()
-            return
+        return True
 
-        # Step 6: Run nixos-rebuild switch
-        step += 1
-        progress.update(progress=step)
-        status.update(f"[{step}/6] Running nixos-rebuild switch...")
-        await asyncio.sleep(0.5)
+    except Exception as e:
+        print(f"  ✗ Failed to configure WiFi: {e}")
+        return False
 
-        try:
-            # Run nixos-rebuild switch with flakes support
-            # Enable experimental features needed for flakes
-            env = os.environ.copy()
-            env["NIX_CONFIG"] = "experimental-features = nix-command flakes"
 
-            result = await asyncio.create_subprocess_exec(
-                "nixos-rebuild", "switch",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-            stdout, stderr = await result.communicate()
+def run_nixos_rebuild() -> bool:
+    """Run nixos-rebuild switch."""
+    print("\n[6/6] Running nixos-rebuild switch...")
+    print("  (This may take a few minutes)")
 
-            if result.returncode != 0:
-                error_msg = stderr.decode() if stderr else "Unknown error"
-                error_log.update(
-                    f"[red]nixos-rebuild failed:[/red]\\n{error_msg[:500]}"
-                )
-                self.show_exit_button()
-                return
+    try:
+        # Enable experimental features needed for flakes
+        env = os.environ.copy()
+        env["NIX_CONFIG"] = "experimental-features = nix-command flakes"
 
-        except Exception as e:
-            error_log.update(f"[red]Failed to run nixos-rebuild: {e}[/red]")
-            self.show_exit_button()
-            return
-
-        # Success!
-        progress.update(progress=6)
-        status.update(
-            """
-[bold green]✓ Configuration applied successfully![/bold green]
-
-[bold]Summary of changes:[/bold]
-  • SSH authorized keys configured for root
-  • GitHub Actions runner configured
-  • Hostname set to: {hostname}
-  • Timezone set to: {timezone}
-  {wifi_status}
-
-You can now:
-  • SSH into the system using your configured key
-  • The GitHub Actions runner should start automatically
-
-Backups of original files were created with .backup.<timestamp> suffix.
-""".format(
-                hostname=state.hostname,
-                timezone=state.timezone,
-                wifi_status="  • WiFi configured" if state.configure_wifi else "  • WiFi not configured"
-            )
+        result = subprocess.run(
+            ["nixos-rebuild", "switch"],
+            capture_output=True,
+            text=True,
+            env=env,
         )
-        self.show_exit_button()
 
-    def show_exit_button(self) -> None:
-        """Show the exit button."""
-        button = self.query_one("#exit", Button)
-        button.disabled = False
-        button.remove_class("hidden")
+        if result.returncode != 0:
+            error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
+            print(f"  ✗ nixos-rebuild failed:\n{error_msg}")
+            return False
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "exit":
-            self.app.exit()
+        print("  ✓ Configuration applied successfully")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ Failed to run nixos-rebuild: {e}")
+        return False
 
 
-class SetupApp(App):
-    """Main TUI application for NixOS Raspberry Pi setup."""
+def interactive_setup():
+    """Run interactive setup."""
+    print("="*60)
+    print("NixOS Raspberry Pi Post-Boot Configuration")
+    print("="*60)
+    print("\nThis tool will configure your NixOS Raspberry Pi.")
+    print("Press Ctrl+C at any time to cancel.\n")
 
-    CSS = """
-    Screen {
-        align: center middle;
-    }
+    # SSH Key
+    ssh_success, ssh_key = prompt_ssh_key()
+    if not ssh_success:
+        print("\nWarning: No SSH key configured. You won't be able to log in via SSH.")
+        confirm = input("Continue without SSH? (yes/no): ").strip().lower()
+        if confirm != "yes":
+            print("Setup cancelled.")
+            return 1
 
-    .banner {
-        text-align: center;
-        color: $primary;
-    }
+    # Runner Token
+    print("\n" + "="*60)
+    print("Step 2: GitHub Actions Runner")
+    print("="*60)
+    print("\nGet token from: GitHub Repo → Settings → Actions → Runners → New self-hosted runner")
+    runner_token = prompt_input("Runner registration token", required=True, password=True)
+    runner_url = prompt_input("Runner URL", default=DEFAULT_RUNNER_URL, required=True)
 
-    .welcome-text {
-        width: 80;
-        height: auto;
-        content-align: center middle;
-        text-align: left;
-        padding: 1 2;
-    }
+    # Hostname
+    print("\n" + "="*60)
+    print("Step 3: Hostname (Optional)")
+    print("="*60)
+    hostname = prompt_input("Hostname", default=DEFAULT_HOSTNAME, required=False)
+    if not hostname:
+        hostname = DEFAULT_HOSTNAME
 
-    .centered {
-        width: 80;
-        height: auto;
-        border: solid $primary;
-        padding: 1 2;
-    }
+    # Timezone
+    print("\n" + "="*60)
+    print("Step 4: Timezone (Optional)")
+    print("="*60)
+    timezones = get_timezones()
+    print(f"\nCommon timezones: UTC, Europe/Zurich, America/New_York")
+    timezone = prompt_input("Timezone", default=DEFAULT_TIMEZONE, required=False)
+    if not timezone:
+        timezone = DEFAULT_TIMEZONE
 
-    .step-title {
-        text-align: center;
-        text-style: bold;
-        color: $primary;
-        height: auto;
-    }
+    # WiFi
+    print("\n" + "="*60)
+    print("Step 5: WiFi Configuration (Optional)")
+    print("="*60)
+    configure_wifi_choice = input("\nConfigure WiFi? (yes/no) [no]: ").strip().lower()
+    wifi_ssid = ""
+    wifi_password = ""
+    wifi_enable = False
+    if configure_wifi_choice == "yes":
+        wifi_ssid = prompt_input("WiFi SSID", required=True)
+        wifi_password = prompt_input("WiFi Password", required=True, password=True)
+        wifi_enable = True
 
-    .step-desc {
-        text-align: center;
-        height: auto;
-        margin: 1 0;
-    }
+    # Summary
+    print("\n" + "="*60)
+    print("Configuration Summary")
+    print("="*60)
+    print(f"\nSSH Key: {'Configured' if ssh_key else 'Not configured'}")
+    print(f"Runner Token: {'*' * min(len(runner_token), 8) if runner_token else 'Not set'}")
+    print(f"Runner URL: {runner_url}")
+    print(f"Hostname: {hostname}")
+    print(f"Timezone: {timezone}")
+    print(f"WiFi: {wifi_ssid if wifi_enable else 'Not configured'}")
 
-    .buttons {
-        height: auto;
-        margin-top: 2;
-        align: center middle;
-    }
+    print("\n" + "-"*60)
+    confirm = input("\nApply this configuration? (yes/no): ").strip().lower()
+    if confirm != "yes":
+        print("Setup cancelled.")
+        return 1
 
-    Button {
-        margin: 0 1;
-    }
+    # Apply configuration
+    print("\n" + "="*60)
+    print("Applying Configuration")
+    print("="*60)
 
-    Input, TextArea, Select {
-        margin: 1 0;
-    }
+    success = True
 
-    TextArea {
-        height: 5;
-    }
+    if ssh_key:
+        if not configure_ssh(ssh_key):
+            success = False
 
-    .error {
-        color: $error;
-        text-align: center;
-    }
+    if runner_token:
+        if not configure_runner(runner_token, runner_url):
+            success = False
 
-    .hint {
-        color: $text-disabled;
-        text-align: center;
-        height: auto;
-    }
+    if not configure_hostname(hostname):
+        success = False
 
-    RadioSet {
-        margin: 1 0;
-    }
+    if not configure_timezone(timezone):
+        success = False
 
-    Checkbox {
-        margin: 1 0;
-    }
+    if not configure_wifi(wifi_ssid, wifi_password, wifi_enable):
+        success = False
 
-    ProgressBar {
-        margin: 1 0;
-    }
+    if not run_nixos_rebuild():
+        success = False
 
-    .hidden {
-        display: none;
-    }
+    print("\n" + "="*60)
+    if success:
+        print("✓ Setup completed successfully!")
+        print("="*60)
+        print("\nYou can now:")
+        print("  • SSH into the system as root using your configured key")
+        if runner_token:
+            print("  • The GitHub Actions runner will be available after enabling it")
+        print("\nBackups of original files were created with .backup.<timestamp> suffix.")
+    else:
+        print("✗ Setup completed with errors")
+        print("="*60)
+        print("\nSome steps failed. Check the output above for details.")
+        return 1
 
-    #summary {
-        height: auto;
-        max-height: 25;
-    }
-    """
-
-    SCREENS = {
-        "welcome": WelcomeScreen,
-    }
-
-    def on_mount(self) -> None:
-        self.push_screen(WelcomeScreen())
+    return 0
 
 
 def main():
@@ -1168,10 +530,86 @@ def main():
         print("Usage: sudo setup-tool")
         return 1
 
-    app = SetupApp()
-    app.run()
-    return 0
+    parser = argparse.ArgumentParser(
+        description="NixOS Raspberry Pi Post-Boot Configuration Tool"
+    )
+    parser.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Run in non-interactive mode (use environment variables or defaults)"
+    )
+    parser.add_argument("--ssh-key", help="SSH public key or GitHub username")
+    parser.add_argument("--ssh-method", choices=["github", "direct", "file"],
+                        help="How to get SSH key: github=fetch from GitHub, direct=paste key, file=read from file")
+    parser.add_argument("--runner-token", help="GitHub Actions runner registration token")
+    parser.add_argument("--runner-url", default=DEFAULT_RUNNER_URL, help="GitHub repository URL")
+    parser.add_argument("--hostname", default=DEFAULT_HOSTNAME, help="System hostname")
+    parser.add_argument("--timezone", default=DEFAULT_TIMEZONE, help="System timezone")
+    parser.add_argument("--wifi-ssid", help="WiFi network name")
+    parser.add_argument("--wifi-password", help="WiFi password")
+    parser.add_argument("--skip-wifi", action="store_true", help="Skip WiFi configuration")
+
+    args = parser.parse_args()
+
+    if args.non_interactive:
+        # Non-interactive mode
+        print("Running in non-interactive mode...")
+
+        # Get SSH key
+        ssh_key = ""
+        if args.ssh_key:
+            if args.ssh_method == "github":
+                success, ssh_key = fetch_github_keys(args.ssh_key)
+                if not success:
+                    print(f"Error: {ssh_key}")
+                    return 1
+            elif args.ssh_method == "file":
+                success, ssh_key = read_key_from_file(args.ssh_key)
+                if not success:
+                    print(f"Error: {ssh_key}")
+                    return 1
+            else:
+                is_valid, msg = validate_ssh_key(args.ssh_key)
+                if not is_valid:
+                    print(f"Error: {msg}")
+                    return 1
+                ssh_key = args.ssh_key
+
+        # Apply configuration
+        success = True
+
+        if ssh_key:
+            if not configure_ssh(ssh_key):
+                success = False
+
+        if args.runner_token:
+            if not configure_runner(args.runner_token, args.runner_url):
+                success = False
+
+        if not configure_hostname(args.hostname):
+            success = False
+
+        if not configure_timezone(args.timezone):
+            success = False
+
+        if not args.skip_wifi and args.wifi_ssid:
+            if not configure_wifi(args.wifi_ssid, args.wifi_password or "", True):
+                success = False
+        else:
+            configure_wifi("", "", False)
+
+        if not run_nixos_rebuild():
+            success = False
+
+        return 0 if success else 1
+    else:
+        # Interactive mode
+        try:
+            return interactive_setup()
+        except KeyboardInterrupt:
+            print("\n\nSetup cancelled by user.")
+            return 1
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

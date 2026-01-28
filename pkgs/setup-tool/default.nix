@@ -10,12 +10,6 @@
   systemd,
 }:
 
-let
-  pythonEnv = python3Packages.python.withPackages (ps: with ps; [
-    textual
-    textual-autocomplete
-  ]);
-in
 python3Packages.buildPythonApplication rec {
   pname = "nixos-rpi-setup-tool";
   version = "1.0.0";
@@ -27,6 +21,9 @@ python3Packages.buildPythonApplication rec {
   nativeBuildInputs = [
     makeWrapper
   ];
+
+  # No Python dependencies needed for CLI version
+  propagatedBuildInputs = [ ];
 
   dontUnpack = true;
   dontBuild = true;
@@ -42,8 +39,8 @@ python3Packages.buildPythonApplication rec {
     # Copy the main script
     cp ${src}/setup-tool.py $out/share/${pname}/
 
-    # Create wrapper script using pythonEnv which includes all packages
-    makeWrapper ${pythonEnv}/bin/python $out/bin/setup-tool \
+    # Create wrapper script
+    makeWrapper ${python3Packages.python}/bin/python $out/bin/setup-tool \
       --add-flags "$out/share/${pname}/setup-tool.py" \
       --prefix PATH : "${lib.makeBinPath [
         iw
@@ -58,9 +55,9 @@ python3Packages.buildPythonApplication rec {
   '';
 
   meta = with lib; {
-    description = "TUI-based post-boot configuration tool for NixOS Raspberry Pi";
+    description = "CLI-based post-boot configuration tool for NixOS Raspberry Pi";
     longDescription = ''
-      A terminal user interface tool that guides users through post-boot
+      A command-line tool that guides users through post-boot
       configuration of NixOS on Raspberry Pi 4. Configures SSH keys,
       GitHub Actions runner, hostname, timezone, and WiFi credentials.
     '';
