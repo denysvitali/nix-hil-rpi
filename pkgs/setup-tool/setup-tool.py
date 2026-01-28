@@ -388,6 +388,66 @@ def find_nixos_config() -> Optional[Path]:
     return None
 
 
+def clone_nixos_config(repo_url: str = "https://github.com/denysvitali/nix-hil-rpi") -> bool:
+    """Clone the NixOS configuration repository to /etc/nixos."""
+    print(f"  Cloning NixOS configuration from {repo_url}...")
+
+    try:
+        # Ensure /etc/nixos exists and is empty
+        if NIXOS_CONFIG_DIR.exists():
+            # Check if directory is empty
+            if any(NIXOS_CONFIG_DIR.iterdir()):
+                print(f"  Warning: {NIXOS_CONFIG_DIR} is not empty")
+                response = input("  Remove existing contents and clone? (yes/no): ").strip().lower()
+                if response != "yes":
+                    return False
+                # Backup existing directory
+                backup_path = Path(f"{NIXOS_CONFIG_DIR}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+                shutil.move(NIXOS_CONFIG_DIR, backup_path)
+                print(f"  Backed up existing config to {backup_path}")
+                NIXOS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        else:
+            NIXOS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Clone the repository
+        result = subprocess.run(
+            ["git", "clone", repo_url, str(NIXOS_CONFIG_DIR)],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            print(f"  ✗ Failed to clone repository: {result.stderr}")
+            return False
+
+        print(f"  ✓ Cloned repository to {NIXOS_CONFIG_DIR}")
+        return True
+
+    except Exception as e:
+        print(f"  ✗ Failed to clone repository: {e}")
+        return False
+
+
+def get_flake_configs(flake_dir: Path) -> list[str]:
+    """Get available NixOS configurations from flake.nix."""
+    try:
+        result = subprocess.run(
+            ["nix", "flake", "show", str(flake_dir), "--json"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            import json
+            data = json.loads(result.stdout)
+            configs = []
+            if "nixosConfigurations" in data:
+                configs = list(data["nixosConfigurations"].keys())
+            return configs
+    except Exception:
+        pass
+    return []
+
+
 def run_nixos_rebuild() -> bool:
     """Run nixos-rebuild switch."""
     print("\n[6/6] Running nixos-rebuild switch...")
@@ -397,12 +457,23 @@ def run_nixos_rebuild() -> bool:
     config_path = find_nixos_config()
     if not config_path:
         print("  ⚠ No NixOS configuration found at /etc/nixos/")
-        print("  Skipping nixos-rebuild. You'll need to run it manually after")
-        print("  ensuring your NixOS configuration is in place.")
-        return True  # Not a fatal error
+        response = input("  Clone nix-hil-rpi repository to /etc/nixos? (yes/no) [yes]: ").strip().lower()
+        if response in ("", "yes", "y"):
+            if not clone_nixos_config():
+                print("  Skipping nixos-rebuild. You'll need to set up the configuration manually.")
+                return True
+            # Re-check for config after cloning
+            config_path = find_nixos_config()
+            if not config_path:
+                print("  ✗ Configuration still not found after cloning")
+                return False
+        else:
+            print("  Skipping nixos-rebuild. You'll need to set up the configuration manually.")
+            return True  # Not a fatal error
 
     # Check if we're in a flake-based setup
-    is_flake = config_path.name == "flake.nix" or (config_path.parent / "flake.nix").exists()
+    flake_path = config_path.parent / "flake.nix" if config_path.name != "flake.nix" else config_path
+    is_flake = flake_path.exists()
 
     try:
         # Enable experimental features needed for flakes
@@ -410,10 +481,29 @@ def run_nixos_rebuild() -> bool:
         env["NIX_CONFIG"] = "experimental-features = nix-command flakes"
 
         if is_flake:
-            # For flake-based configs, use the flake
-            print(f"  Using flake configuration: {config_path.parent}")
+            # For flake-based configs, detect available configurations
+            print(f"  Using flake configuration: {flake_path.parent}")
+
+            # Get available configs
+            configs = get_flake_configs(flake_path.parent)
+            if configs:
+                # Prefer pi4-aarch64 for native ARM64, fallback to first available
+                config_name = None
+                if "pi4-aarch64" in configs:
+                    config_name = "pi4-aarch64"
+                elif "pi4-cross" in configs:
+                    config_name = "pi4-cross"
+                else:
+                    config_name = configs[0]
+
+                flake_target = f"{flake_path.parent}#{config_name}"
+                print(f"  Using configuration: {config_name}")
+            else:
+                # Fallback to default behavior
+                flake_target = str(flake_path.parent)
+
             result = subprocess.run(
-                ["nixos-rebuild", "switch", "--flake", str(config_path.parent)],
+                ["nixos-rebuild", "switch", "--flake", flake_target],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -434,7 +524,8 @@ def run_nixos_rebuild() -> bool:
             print(f"  ✗ nixos-rebuild failed:\n{error_msg}")
             print("\n  You can try running manually:")
             if is_flake:
-                print(f"    sudo nixos-rebuild switch --flake {config_path.parent}")
+                print(f"    sudo nixos-rebuild switch --flake {flake_path.parent}#<config-name>")
+                print(f"  Available configs: {', '.join(configs) if 'configs' in dir() else 'unknown'}")
             else:
                 print("    sudo nixos-rebuild switch")
             return False
